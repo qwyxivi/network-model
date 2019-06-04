@@ -3,64 +3,12 @@ import numpy as np
 import scipy.linalg as LA
 """scipy linalg inversion seems to be more stable and has better accuracy"""
 
-class pu_block:
-    def __init__(self, a, b, c, d, converted=False, c_count = 0):
-        self.a = a
-        self.b = b
-        self.c = c
-        self.d = d
-        self.converted = converted
-        self.c_count = c_count
-    def matx(self):
-        return np.block([[self.a,self.b],[self.c,self.d]])
-    def convert(self, flag=True):
-        assert not self.converted
-        """converts to ordinary signature"""
-        a, b, c, d = self.a, self.b, self.c, self.d
-        dinv = LA.inv(d)
-        #print(LA.eig(d, left=False, right=False))
-        bdi = b@dinv
-        self.a = a - bdi@c
-        self.b = bdi
-        self.c = -dinv@c
-        self.d = dinv
-        self.converted = True
-        self.c_count += 1
-    def deconvert(self, flag=True):
-        assert self.converted
-        a, b, c, d = self.a, self.b, self.c, self.d
-        dinv = LA.inv(d)
-        #print(LA.eig(d, left=False, right=False))
-        bdi = b@dinv
-        self.a = a - bdi@c
-        self.b = bdi
-        self.c = -dinv@c
-        self.d = dinv
-        self.converted = False
-        self.c_count += 1
-    def combine_c(self, other):
-        """for converted matrices, returns unitary matrix
-        C(U_s & U_o)= C(U_o)@C(U_s)
-        where C is the deconversion algorithm
-        """
-        assert self.converted
-        assert other.converted
-        m, n = self.b.shape
-        prefix2 = self.d@LA.inv(np.identity(n)-other.c@self.b)
-        prefix1 = other.a@LA.inv(np.identity(m)-self.b@other.c)
-        return pu_block(prefix1@self.a,other.b+prefix1@(self.b@other.d),self.c+prefix2@(other.c@self.a),prefix2@other.d, converted=True)
-    def multiply_c(self, other):
-        """for deconverted matrices"""
-        assert not self.converted
-        assert not other.converted
-        return pu_block(other.a@self.a+other.b@self.c,other.a@self.b+other.b@self.d,other.c@self.a+other.d@self.c,other.c@self.b+other.d@self.d)
-
-
-
-
-
 class chiral_network_layer:
     def blockconversion(blocks):
+        """
+        Converts matrices pseudo-unitary under R/L odd signature metric to its "dual" unitary matrices and vice-versa.
+        This basically converts scattering matrices to transfer matrices and vice-versa
+        """
         a = blocks[0][0]
         b = blocks[0][1]
         c = blocks[1][0]
