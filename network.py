@@ -2,6 +2,14 @@ import random
 import numpy as np
 import scipy.linalg as LA
 """scipy linalg inversion seems to be more stable and has better accuracy"""
+import collections
+
+logger = collections.deque()
+def logging(description, item):
+    logger.append(item)
+    if len(logger)>50:
+        logger.popleft()
+    return None
 
 class chiral_network_layer:
     def blockconversion(blocks):
@@ -27,16 +35,18 @@ class chiral_network_layer:
     def transfer_blocks(self, N=1):
         """yields the transfer matrix of a single layer, in blocks"""
         raise NotImplementedError("This is an interface")
-    def scattering_blocks(self, N=1):
+    def scattering_blocks(self, N=1, collection=4):
         """yields the scattering matrix of a single layer, in blocks"""
+        i = 0
+        combined_block = np.identity(self.L+self.R)
         for blocks in self.transfer_blocks(N):
             yield chiral_network_layer.blockconversion(blocks)
     def transfer(self, N=1):
         """yields the transfer matrix of a single layer"""
         for blocks in self.transfer_blocks(N):
             yield np.block(blocks)
-    def scattering(self, N=1):
-        for blocks in self.scattering_blocks(N):
+    def scattering(self, N=1, collection=4):
+        for blocks in self.scattering_blocks(N, collection):
             yield np.block(blocks)
 
 
@@ -91,26 +101,26 @@ class clean_flat_layer(chiral_network_layer):
         self.ll = self.ll1@self.ll2+self.lr1@self.rl2
     def transfer_blocks(self, N=1):
         for i in range(N):
-            print(i)
+            #print(i)
             yield [[self.rr, self.rl],[self.lr, self.ll]]
     def scattering_blocks(self, N=1):
         scat = chiral_network_layer.blockconversion([[self.rr, self.rl],[self.lr, self.ll]])
         for i in range(N):
-            print(i)
+            #print(i)
             yield scat
     def transfer(self, N=1):
         """yields the transfer matrix of a single layer"""
         result = np.block([[self.rr, self.rl],[self.lr, self.ll]])
         for i in range(N):
-            print(i)
+            #print(i)
             yield result
     def scattering(self, N=1):
         result = np.block(chiral_network_layer.blockconversion([[self.rr, self.rl],[self.lr, self.ll]]))
         for i in range(N):
-            print(i)
+            #print(i)
             yield result
 
-class noisy_flat_layer(clean_flat_layer):
+class noisy_flat_layer(chiral_network_layer):
     def __init__(self, N, delta = 0.0, norm = 1.0, periodic=False, dtype = np.dtype(np.complex128), W=0, noisetype="paired_flip"):
         self.W = W
         self.noisetype = noisetype
@@ -130,7 +140,7 @@ class noisy_flat_layer(clean_flat_layer):
                 lr = lrZ1@self.rr2+self.ll1@lrZ2
                 ll = self.ll1@self.ll2+lrZ1@Zrl2
                 yield [[rr, rl],[lr, ll]]
-        elif self.noisetype == "random_iso_flip":
+        elif self.noisetype == "iso_flip":
             for i in range(N):
                 Z1r = np.array([-1 if np.random.random()<W else 1 for i in range(self.R)])
                 Z1l = np.array([-1 if np.random.random()<W else 1 for i in range(self.L)])
@@ -141,7 +151,7 @@ class noisy_flat_layer(clean_flat_layer):
                 lr = (self.lr1*Z1r)@self.rr2*Z2r+(self.ll1*Z1l)@self.lr2*Z2r
                 ll = (self.ll1*Z1l)@self.ll2*Z2l+(self.lr1*Z1r)@self.rl2*Z2l
                 yield [[rr, rl],[lr, ll]]
-        elif self.noisetype == "random_chiral_flip":
+        elif self.noisetype == "chiral_flip":
             for i in range(N):
                 Z1r = np.array([-1 if np.random.random()<W else 1 for i in range(self.R)])
                 Z2r = np.array([-1 if np.random.random()<W else 1 for i in range(self.R)])
@@ -164,7 +174,7 @@ class noisy_flat_layer(clean_flat_layer):
                 lr = lrZ1@self.rr2+self.ll1@lrZ2
                 ll = self.ll1@self.ll2+lrZ1@Zrl2
                 yield [[rr, rl],[lr, ll]]
-        elif self.noisetype == "random_iso_rotation":
+        elif self.noisetype == "iso_rotation":
             for i in range(N):
                 Z1r = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
                 Z1l = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.L)])
@@ -175,7 +185,7 @@ class noisy_flat_layer(clean_flat_layer):
                 lr = (self.lr1*Z1r)@self.rr2*Z2r+(self.ll1*Z1l)@self.lr2*Z2r
                 ll = (self.ll1*Z1l)@self.ll2*Z2l+(self.lr1*Z1r)@self.rl2*Z2l
                 yield [[rr, rl],[lr, ll]]
-        elif self.noisetype == "random_chiral_rotation":
+        elif self.noisetype == "chiral_rotation":
             for i in range(N):
                 Z1r = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
                 Z2r = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
@@ -218,10 +228,26 @@ class full_network:
             Q, R = np.linalg.qr(component@Q)
             scaler += np.log(np.abs(np.diag(R)))
         return scaler/samples, initial
-    def tree_scattering(self, order = 5, generator = None):
+    def tree_scattering(self, order = 5, generator = None, collection=10):
+        """To do: replace lower order computations with direct phase flipping"""
         if generator == None:
-            generator = self.network_layer.scattering_blocks(2**order)
+            generator = self.network_layer.scattering_blocks(2**order, collection=collection)
         if order == 0:
             return generator.__next__()
         else:
             return full_network.combine_scattering_matrices(self.tree_scattering(order=order-1, generator=generator),self.tree_scattering(order=order-1, generator=generator))
+    def conductance(self, order = 5, collection=4):
+        """returns conductance divided by e^2/h"""
+        scattering = self.tree_scattering(order=order, collection=collection)
+        Z = np.block(scattering)
+        print(Z.conj().T@Z)
+        right_trans = np.trace(scattering[0][0]@scattering[0][0].conj().T)
+        left_trans = np.trace(scattering[1][1]@scattering[1][1].conj().T)
+        return right_trans, left_trans
+    def conductance_eigs(self, order = 5, collection=4):
+        """returns conductance divided by e^2/h"""
+        scattering = self.tree_scattering(order=order, collection=collection)
+        Z = np.block(scattering)
+        print(Z.conj().T@Z)
+        right_trans = LA.eig(scattering[0][0]@scattering[0][0].conj().T, left=False, right=False)
+        return right_trans
