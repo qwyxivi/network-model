@@ -92,7 +92,7 @@ class clean_flat_layer(chiral_network_layer):
         delta2 = self.delta/2
         tempa = np.sqrt(1-2*delta2**2, dtype = self.dtype)/sqrt2
         self.theta1 = np.arctanh((tempa-delta2)*self.norm, dtype = self.dtype)
-        self.theta2 = np.arctanh((tempa+delta2)*self.norm, dtype = self.dtype)
+        self.theta2 = -np.arctanh((tempa+delta2)*self.norm, dtype = self.dtype)
         self.s1 = np.sinh(self.theta1, dtype = self.dtype)
         self.s2 = np.sinh(self.theta2, dtype = self.dtype)
         self.c1 = np.cosh(self.theta1, dtype = self.dtype)
@@ -259,6 +259,38 @@ class noisy_flat_layer(chiral_network_layer):
                 lr = lrc*Zr
                 ll = llc*Zl
                 yield [[rr, rl],[lr, ll]]
+        elif self.noisetype == "Ax":
+            rrc = self.rr1@self.rr2+self.rl1@self.lr2
+            rlc = self.rl1@self.ll2+self.rr1@self.rl2
+            lrc = self.lr1@self.rr2+self.ll1@self.lr2
+            llc = self.ll1@self.ll2+self.lr1@self.rl2
+            for i in range(N):
+                expst = np.array([(np.random.random()-0.5)*W for i in range(self.R)])
+                Zr = np.exp(1j*expst)
+                Zl = np.exp(-1j*expst)
+                I1 = (self.rl1*Zl)
+                I2 = (self.ll1*Zl)
+                rr = (self.rr1@self.rr2+I1@self.lr2)*Zr
+                rl = I1@self.ll2+self.rr1@self.rl2
+                lr = (self.lr1@self.rr2+I2@self.lr2)*Zr
+                ll = I2@self.ll2+self.lr1@self.rl2
+                yield [[rr, rl],[lr, ll]]
+        elif self.noisetype == "V":
+            rrc = self.rr1@self.rr2+self.rl1@self.lr2
+            rlc = self.rl1@self.ll2+self.rr1@self.rl2
+            lrc = self.lr1@self.rr2+self.ll1@self.lr2
+            llc = self.ll1@self.ll2+self.lr1@self.rl2
+            for i in range(N):
+                expst = np.array([(np.random.random()-0.5)*W for i in range(self.R)])
+                Zr = np.exp(1j*expst)
+                Zl = Zr
+                I1 = (self.rl1*Zl)
+                I2 = (self.ll1*Zl)
+                rr = (self.rr1@self.rr2+I1@self.lr2)*Zr
+                rl = I1@self.ll2+self.rr1@self.rl2
+                lr = (self.lr1@self.rr2+I2@self.lr2)*Zr
+                ll = I2@self.ll2+self.lr1@self.rl2
+                yield [[rr, rl],[lr, ll]]
 
 class clean_uniform_layer(chiral_network_layer):
     def __init__(self, N, delta = 0.0, norm = 1.0, periodic=False, dtype = np.dtype(np.complex128)):
@@ -364,6 +396,137 @@ class clean_square_layer(chiral_network_layer):
         theta = beta + np.pi/4
         self.s = np.sin(theta, dtype = self.dtype)
         self.c = np.cos(theta, dtype = self.dtype)
+        phi1 = np.ones(R)
+        phi2 = np.ones(R)
+        phi3 = np.ones(R)
+        phi4 = np.ones(R)
+        M = np.diag(phi2)
+        Y = np.roll(np.diag(phi4),1,axis=0)
+        #A13 means layer A in 1 out 3
+        self.A11 = (M+Y)*((self.s*self.c)*phi1)
+        self.A33 = self.A11*phi3
+        self.A13 = (M*self.s**2-Y*self.c**2)*phi3
+        self.A31 = (M*self.c**2-Y*self.s**2)*phi1
+        phi1 = np.ones(R)
+        phi2 = np.ones(R)
+        phi3 = np.ones(R)
+        phi4 = np.ones(R)
+        M = np.diag(phi4)
+        Y = np.roll(np.diag(phi2),1,axis=1)
+        #A13 means layer A in 1 out 3
+        self.B11 = (M+Y)*((self.s*self.c)*phi1)
+        self.B33 = self.A11*phi3
+        self.B13 = (Y*self.s**2-M*self.c**2)*phi3
+        self.B31 = (Y*self.c**2-M*self.s**2)*phi1
+        scat1 = [[self.A11,self.A13],[self.A31,self.A33]]
+        scat2 = [[self.B11,self.B13],[self.B31,self.B33]]
+        self.scattering = chiral_network_layer.combine_scattering_matrices(scat1, scat2)
+        ## DEBUG:
+        temp = np.block(self.scattering)
+        print("check unitarity", temp.conj().T@temp)
+    def transfer_blocks(self, N=1):
+        for blocks in self.scattering_blocks(N):
+            yield chiral_network_layer.blockconversion(blocks)
+    def scattering_blocks(self, N=1):
+        for i in range(N):
+            #print(i)
+            yield self.scattering
+
+class noisy_square_layer(chiral_network_layer):
+    def __init__(self, N, beta=0.0, periodic=True, dtype = np.dtype(np.complex128), W=0.0, noisetype="chiral"):
+        assert periodic, "square layer only defined for periodic conditions"
+        assert N%2 == 0, "square model only defined for even widths"
+        self.W = W
+        self.noisetype = noisetype
+        L = N//2
+        R = L
+        chiral_network_layer.__init__(self, L, R,  dtype = dtype)
+        """calculation of important constants. random phase shifts are always outer"""
+        theta = beta + np.pi/4
+        self.s = np.sin(theta, dtype = self.dtype)
+        self.c = np.cos(theta, dtype = self.dtype)
+        self.s_q = self.s**2
+        self.c_q = self.c**2
+        self.sc = self.s*self.c
+    def transfer_blocks(self, N=1):
+        for blocks in self.scattering_blocks(N):
+            yield chiral_network_layer.blockconversion(blocks)
+    def scattering_blocks(self, N=1):
+        noisetype = self.noisetype
+        W = 2*self.W
+        R = self.R
+        allphis = set([])
+        if noisetype not in allphis:
+            """precomputes"""
+            M = np.identity(R)
+            Y = np.roll(np.identity(R),1,axis=0)
+            self.A11 = (M+Y)*(self.s*self.c)
+            self.A33 = self.A11
+            self.A13 = (M*self.s**2-Y*self.c**2)
+            self.A31 = (M*self.c**2-Y*self.s**2)
+            M = np.identity(R)
+            Y = np.roll(np.identity(R),1,axis=1)
+            self.B11 = (M+Y)*(self.s*self.c)
+            self.B33 = self.A11
+            self.B13 = (Y*self.s**2-M*self.c**2)
+            self.B31 = (Y*self.c**2-M*self.s**2)
+            for i in range(N):
+                """noisetype"""
+                if noisetype=="chiral_rot_dbl":
+                    phi1A = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi3A = np.ones(R)
+                    phi1B = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi3B = np.ones(R)
+                else:
+                    phi1A = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi3A = np.ones(R)
+                    phi1B = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi3B = np.ones(R)
+                """compute"""
+                scat1 = [[self.A11*phi1A,self.A13*phi3A],[self.A31*phi1A,self.A33*phi3A]]
+                scat2 = [[self.B11*phi1B,self.B13*phi3B],[self.B31*phi1B,self.B33*phi3B]]
+                yield chiral_network_layer.combine_scattering_matrices(scat1, scat2)
+        else:
+            for i in range(N):
+                """generate noise"""
+                if noisetype=="uniform":
+                    phi1A = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi2A = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi3A = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi4A = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi1B = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi2B = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi3B = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                    phi4B = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                """compute"""
+                M = np.diag(phi2A)
+                Y = np.roll(np.diag(phi4A),1,axis=0)
+                self.A11 = (M+Y)*((self.s*self.c)*phi1A)
+                self.A33 = self.A11*phi3A
+                self.A13 = (M*self.s**2-Y*self.c**2)*phi3A
+                self.A31 = (M*self.c**2-Y*self.s**2)*phi1A
+                M = np.diag(phi4B)
+                Y = np.roll(np.diag(phi2B),1,axis=1)
+                #A13 means layer A in 1 out 3
+                self.B11 = (M+Y)*((self.s*self.c)*phi1B)
+                self.B33 = self.A11*phi3B
+                self.B13 = (Y*self.s**2-M*self.c**2)*phi3B
+                self.B31 = (Y*self.c**2-M*self.s**2)*phi1B
+                scat1 = [[self.A11,self.A13],[self.A31,self.A33]]
+                scat2 = [[self.B11,self.B13],[self.B31,self.B33]]
+                yield chiral_network_layer.combine_scattering_matrices(scat1, scat2)
+
+class clean_square_layer_old(chiral_network_layer):
+    def __init__(self, N, beta=0.0, periodic=True, dtype = np.dtype(np.complex128)):
+        assert periodic, "square layer only defined for periodic conditions"
+        assert N%2 == 0, "square model only defined for even widths"
+        L = N//2
+        R = L
+        chiral_network_layer.__init__(self, L, R,  dtype = dtype)
+        """calculation of important constants. random phase shifts are always outer"""
+        theta = beta + np.pi/4
+        self.s = np.sin(theta, dtype = self.dtype)
+        self.c = np.cos(theta, dtype = self.dtype)
         Zl1 = np.ones(R)
         Zr1 = np.ones(R)
         Zl2 = np.ones(R)
@@ -437,6 +600,54 @@ class magic_square_layer(chiral_network_layer):
         theta = beta + np.pi/4
         self.s = np.sin(theta, dtype = self.dtype)
         self.c = np.cos(theta, dtype = self.dtype)
+        phi1 = np.ones(R)
+        phi2 = np.ones(R)
+        phi3 = np.ones(R)
+        phi4 = np.ones(R)
+        M = np.diag(phi2)
+        Y = np.roll(np.diag(phi4),1,axis=0)
+        #A13 means layer A in 1 out 3
+        self.A11 = (M*self.c**2+Y*self.s**2)*phi1
+        self.A33 = (M*self.s**2+Y*self.c**2)*phi3
+        self.A13 = (M-Y)*(self.s*self.c*phi3)
+        self.A31 = (M-Y)*(self.s*self.c*phi1)
+        phi1 = np.ones(R)
+        phi2 = np.ones(R)
+        phi3 = np.ones(R)
+        phi4 = np.ones(R)
+        M = np.diag(phi4)
+        Y = np.roll(np.diag(phi2),1,axis=1)
+        #A13 means layer A in 1 out 3
+        self.B11 = (Y*self.c**2+M*self.s**2)*phi1
+        self.B33 = (Y*self.s**2+M*self.c**2)*phi3
+        self.B13 = (Y-M)*(self.s*self.c*phi3)
+        self.B31 = (Y-M)*(self.s*self.c*phi1)
+        #check scattering
+        scat1 = [[self.A31,self.A33],[self.A11,self.A13]]
+        scat2 = [[self.B11,self.B13],[self.B31,self.B33]]
+        self.scattering = chiral_network_layer.combine_scattering_matrices(scat1, scat2)
+        temp = np.block(self.scattering)
+        print("check unitarity", temp.conj().T@temp)
+        ## DEBUG:
+    def transfer_blocks(self, N=1):
+        for blocks in self.scattering_blocks(N):
+            yield chiral_network_layer.blockconversion(blocks)
+    def scattering_blocks(self, N=1):
+        for i in range(N):
+            #print(i)
+            yield self.scattering
+
+class magic_square_layer_old(chiral_network_layer):
+    def __init__(self, N, beta=0.0, periodic=True, dtype = np.dtype(np.complex128)):
+        assert periodic, "square layer only defined for periodic conditions"
+        assert N%2 == 0, "square model only defined for even widths"
+        L = N//2
+        R = L
+        chiral_network_layer.__init__(self, L, R,  dtype = dtype)
+        """calculation of important constants. random phase shifts are always outer"""
+        theta = beta + np.pi/4
+        self.s = np.sin(theta, dtype = self.dtype)
+        self.c = np.cos(theta, dtype = self.dtype)
         Zl1 = np.ones(R)
         Zr1 = np.ones(R)
         Zl2 = np.ones(R)
@@ -468,7 +679,7 @@ class magic_square_layer(chiral_network_layer):
             #print(i)
             yield self.scattering
 
-class noisy_square_layer(chiral_network_layer):
+class noisy_square_layer_old(chiral_network_layer):
     def __init__(self, N, beta=0.0, periodic=True, dtype = np.dtype(np.complex128), W=0.0, noisetype="chiral"):
         assert periodic, "square layer only defined for periodic conditions"
         assert N%2 == 0, "square model only defined for even widths"
@@ -586,39 +797,39 @@ class full_network:
             Q, R = np.linalg.qr(component@Q)
             scaler += np.log(np.abs(np.diag(R)))
         return scaler/samples, initial
-    def tree_scattering(self, order = 5, generator = None):
+    def tree_scattering(self, length = 32, generator = None):
         """To do: replace lower order computations with direct phase flipping"""
         if generator == None:
-            generator = self.network_layer.scattering_blocks(2**order)
-        if order == 0:
+            generator = self.network_layer.scattering_blocks(length)
+        if length == 1:
             return generator.__next__()
         else:
-            return full_network.combine_scattering_matrices(self.tree_scattering(order=order-1, generator=generator),self.tree_scattering(order=order-1, generator=generator))
+            return full_network.combine_scattering_matrices(self.tree_scattering(length=length//2, generator=generator),self.tree_scattering(length=length-length//2, generator=generator))
     def conductance(self, order = 5, collection=4, noise_average=1, error=False, original = False):
         if noise_average>1:
             R = []
             L = []
             for i in range(noise_average):
-                r, l = self.conductance(order, collection, noise_average=1)
+                r, l, trash1, trash2 = self.conductance(order, collection, noise_average=1)
                 R.append(r)
                 L.append(l)
             result = []
             result.append(np.sum(R)/noise_average)
             result.append(np.sum(L)/noise_average)
             if error:
-                result.append(np.std(R, ddof = 1))
-                result.append(np.std(L, ddof = 1))
+                result.append(np.std(R, ddof = 1)/np.sqrt(noise_average)+1/10/noise_average)
+                result.append(np.std(L, ddof = 1)/np.sqrt(noise_average)+1/10/noise_average)
             if original:
                 result.append(R)
                 result.append(L)
             return result
         """returns conductance divided by e^2/h"""
-        scattering = self.tree_scattering(order=order)
+        scattering = self.tree_scattering(length=int(2**order))
         Z = np.block(scattering)
         #print(Z.conj().T@Z)
         right_trans = np.trace(scattering[0][0]@scattering[0][0].conj().T)
         left_trans = np.trace(scattering[1][1]@scattering[1][1].conj().T)
-        return right_trans, left_trans
+        return right_trans, left_trans, 0.1, 0.1
     def conductance_eigs(self, order = 5, collection=4):
         """returns conductance divided by e^2/h"""
         scattering = self.tree_scattering(order=order)
@@ -626,3 +837,6 @@ class full_network:
         #print(Z.conj().T@Z)
         right_trans = LA.eig(scattering[0][0]@scattering[0][0].conj().T, left=False, right=False)
         return right_trans
+    def detailed_checks(self, order=5):
+        scattering = self.tree_scattering(order=order)
+        return np.block(scattering)
