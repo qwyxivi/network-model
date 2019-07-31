@@ -291,6 +291,39 @@ class noisy_flat_layer(chiral_network_layer):
                 lr = (self.lr1@self.rr2+I2@self.lr2)*Zr
                 ll = I2@self.ll2+self.lr1@self.rl2
                 yield [[rr, rl],[lr, ll]]
+        elif self.noisetype == "p12":
+            rrc = self.rr1@self.rr2+self.rl1@self.lr2
+            rlc = self.rl1@self.ll2+self.rr1@self.rl2
+            lrc = self.lr1@self.rr2+self.ll1@self.lr2
+            llc = self.ll1@self.ll2+self.lr1@self.rl2
+            for i in range(N):
+                Z = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                rrc = (self.rr*Z)@(self.rr2*Z)+self.rl1@(self.lr2*Z)
+                rlc = self.rl1@self.ll2+(self.rr1*Z)@self.rl2
+                lrc = (self.lr1*Z)@(self.rr2*Z)+self.ll1@(self.lr2*Z)
+                llc = self.ll1@self.ll2+(self.lr1*Z)@self.rl2
+                rr = rrc
+                rl = rlc
+                lr = lrc
+                ll = llc
+                yield [[rr, rl],[lr, ll]]
+        elif self.noisetype == "phi2":
+            print("phi2")
+            rrc = self.rr1@self.rr2+self.rl1@self.lr2
+            rlc = self.rl1@self.ll2+self.rr1@self.rl2
+            lrc = self.lr1@self.rr2+self.ll1@self.lr2
+            llc = self.ll1@self.ll2+self.lr1@self.rl2
+            for i in range(N):
+                Z = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
+                rrc = (self.rr*Z)@self.rr2+self.rl1@self.lr2
+                rlc = self.rl1@self.ll2+(self.rr1*Z)@self.rl2
+                lrc = (self.lr1*Z)@self.rr2+self.ll1@self.lr2
+                llc = self.ll1@self.ll2+(self.lr1*Z)@self.rl2
+                rr = rrc
+                rl = rlc
+                lr = lrc
+                ll = llc
+                yield [[rr, rl],[lr, ll]]
 
 class clean_uniform_layer(chiral_network_layer):
     def __init__(self, N, delta = 0.0, norm = 1.0, periodic=False, dtype = np.dtype(np.complex128)):
@@ -306,7 +339,7 @@ class clean_uniform_layer(chiral_network_layer):
         delta2 = self.delta/2
         tempa = np.sqrt(1-2*delta2**2, dtype = self.dtype)/sqrt2
         self.theta1 = np.arctanh((tempa-delta2)*self.norm, dtype = self.dtype)
-        self.theta2 = np.arctanh((tempa+delta2)*self.norm, dtype = self.dtype)
+        self.theta2 = -np.arctanh((tempa+delta2)*self.norm, dtype = self.dtype)
         self.RLlinks = np.zeros(shape=(self.L, self.R))
         for i in range(min(self.L, self.R)):
             self.RLlinks[i,i]=self.theta1
@@ -829,6 +862,37 @@ class full_network:
         #print(Z.conj().T@Z)
         right_trans = np.trace(scattering[0][0]@scattering[0][0].conj().T)
         left_trans = np.trace(scattering[1][1]@scattering[1][1].conj().T)
+        return right_trans, left_trans, 0.1, 0.1
+    def tracer_conductance(self, order = 5, collection=4, noise_average=1, error=False, original = False, mode = "ansatz"):
+        if noise_average>1:
+            R = []
+            L = []
+            for i in range(noise_average):
+                r, l, trash1, trash2 = self.tracer_conductance(order, collection, noise_average=1)
+                R.append(r)
+                L.append(l)
+            result = []
+            result.append(np.sum(R)/noise_average)
+            result.append(np.sum(L)/noise_average)
+            if error:
+                result.append(np.std(R, ddof = 1)/np.sqrt(noise_average)+1/10/noise_average)
+                result.append(np.std(L, ddof = 1)/np.sqrt(noise_average)+1/10/noise_average)
+            if original:
+                result.append(R)
+                result.append(L)
+            return result
+        """returns conductance divided by e^2/h"""
+        scattering = self.tree_scattering(length=int(2**order))
+        Z = np.block(scattering)
+        #print(Z.conj().T@Z)
+        sys_width = len(scattering[0][0])
+        vector = np.ones(shape=(sys_width,1))
+        if mode == "eigenvalue":
+            right_trans = numpy.amax(LA.eig(scattering[0][0].conj().T@scattering[0][0], left=False, right=False))
+            left_trans = numpy.amax(LA.eig(scattering[0][0].conj().T@scattering[0][0], left=False, right=False))
+        else:
+            right_trans = np.trace(vector.T@scattering[0][0].conj().T@scattering[0][0]@vector)/sys_width
+            left_trans = np.trace(vector.T@scattering[1][1].conj().T@scattering[1][1]@vector)/sys_width
         return right_trans, left_trans, 0.1, 0.1
     def conductance_eigs(self, order = 5, collection=4):
         """returns conductance divided by e^2/h"""

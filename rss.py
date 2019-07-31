@@ -37,11 +37,15 @@ def RSS_integrate(fxn, samples=1000, estimator_block = 40, low=-1.0, high=1.0, d
 def peak(x, width, height):
     return height*np.exp(-(x/width)**2)
 
-def peak_fit(ansatz, rand_f, scale=0.5, samples=40, debug=False):
+def peak_fit(ansatz, rand_f, scale=0.5, samples=40, debug=False, odd=True):
     datax = np.linspace(-scale, scale, samples+1)
     temp = [rand_f(xi) for xi in datax]
-    datay = np.array([np.real(tempi[0]) for tempi in temp])
-    datayerr = np.array([np.real(tempi[2]) for tempi in temp])
+    if odd:
+        datay = np.array([np.real(tempi[1]) for tempi in temp])
+        datayerr = np.array([np.real(tempi[3]) for tempi in temp])
+    else:
+        datay = np.array([np.real(tempi[0]) for tempi in temp])
+        datayerr = np.array([np.real(tempi[2]) for tempi in temp])
     if debug: print(datayerr)
     popc, pcov = curve_fit(ansatz, datax, datay, sigma=datayerr, absolute_sigma=True, p0=[scale/2, 1.0])
     x = np.linspace(1.1*min(datax)-0.1*max(datax), 1.1*max(datax)-0.1*min(datax), 101)
