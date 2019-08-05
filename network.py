@@ -4,6 +4,8 @@ import scipy.linalg as LA
 """scipy linalg inversion seems to be more stable and has better accuracy"""
 import collections
 
+tempstorage={}
+
 logger = collections.deque()
 def logging(description, item):
     logger.append(item)
@@ -46,16 +48,19 @@ class chiral_network_layer:
         Converts matrices pseudo-unitary under R/L odd signature metric to its "dual" unitary matrices and vice-versa.
         This basically converts scattering matrices to transfer matrices and vice-versa
         """
-        a = blocks[0][0]
-        b = blocks[0][1]
-        c = blocks[1][0]
-        d = blocks[1][1]
-        dinv = LA.inv(d)
-        bdi = b@dinv
-        newa = a - bdi@c
-        newb = bdi
-        newc = -dinv@c
-        newd = dinv
+        try:
+            a = blocks[0][0]
+            b = blocks[0][1]
+            c = blocks[1][0]
+            d = blocks[1][1]
+            dinv = LA.inv(d)
+            bdi = b@dinv
+            newa = a - bdi@c
+            newb = bdi
+            newc = -dinv@c
+            newd = dinv
+        except LA.LinAlgError:
+            print(blocks)
         return [[newa, newb],[newc, newd]]
     def __init__(self, L, R, dtype = np.dtype(np.complex128)):
         self.dtype = dtype
@@ -325,98 +330,292 @@ class noisy_flat_layer(chiral_network_layer):
                 ll = llc
                 yield [[rr, rl],[lr, ll]]
 
+
 class clean_uniform_layer(chiral_network_layer):
-    def __init__(self, N, delta = 0.0, norm = 1.0, periodic=False, dtype = np.dtype(np.complex128)):
-        assert N%2 == 0 or not periodic, "periodicity only possible for even network widths"
+    def __init__(self, N, params={}, periodic=True, dtype = np.dtype(np.complex128)):
+        assert N%2 == 0, "model only workable for even N"
         L = N//2
         R = N - L
         chiral_network_layer.__init__(self, L, R,  dtype = dtype)
-        self.delta = delta
-        self.norm = norm
-        self.periodic = periodic
-        """calculation of important constants"""
-        sqrt2 = np.sqrt(2, dtype = self.dtype)
-        delta2 = self.delta/2
-        tempa = np.sqrt(1-2*delta2**2, dtype = self.dtype)/sqrt2
-        self.theta1 = np.arctanh((tempa-delta2)*self.norm, dtype = self.dtype)
-        self.theta2 = -np.arctanh((tempa+delta2)*self.norm, dtype = self.dtype)
-        self.RLlinks = np.zeros(shape=(self.L, self.R))
-        for i in range(min(self.L, self.R)):
-            self.RLlinks[i,i]=self.theta1
-        if not self.periodic:
-            for i in range(min(self.L, self.R-1)):
-                self.RLlinks[i+1,i]=self.theta2
+        self.params = {'l':1, 'w':1, 'e':1, 'Ax':0, 'Ay1':0, 'Ay2':0, 'V':0, 'mu':0, 'v':1, 'offset':True}
+        for key in params:
+            self.params[key]=params[key]
+        self.size = L
+        self.l = self.params['l']
+        self.w = self.params['w']
+        self.e = self.params['e']
+        self.v = self.params['v']
+        self.mu = self.params['mu']
+        self.Ax = self.params['Ax']
+        self.Ay1 = self.params['Ay1']
+        self.Ay2 = self.params['Ay2']
+        self.V = self.params['V']
+        self.offset = self.params['offset']
+        CYC = np.roll(np.identity(self.size), 1, axis=1)
+        IDN = np.identity(self.size)
+        if self.offset == True or self.offset== "half":
+            pre_exp = [[(self.e*self.Ax-self.V/self.v)*IDN,
+                        0.5j*self.e*self.Ay1*IDN+0.5j*self.e*self.Ay2*CYC+(-self.mu/self.v/2)*(IDN+CYC)+(IDN-CYC)/self.w],
+                       [0.5j*self.e*self.Ay1*IDN+0.5j*self.e*self.Ay2*CYC.T+(self.mu/self.v/2)*(IDN+CYC.T)-(IDN-CYC.T)/self.w,
+                        (self.e*self.Ax+self.V/self.v)*IDN]]
+        elif self.offset == "derivative":
+            pre_exp = [[(self.e*self.Ax-self.V/self.v)*IDN,
+                        (1j*self.e*self.Ay1-self.mu/self.v)*IDN+(IDN-CYC)/self.w],
+                       [(1j*self.e*self.Ay1+self.mu/self.v)*IDN-(IDN-CYC.T)/self.w,
+                        (self.e*self.Ax+self.V/self.v)*IDN]]
+        elif self.offset == "direct":
+            pre_exp = [[(self.e*self.Ax-self.V/self.v)*IDN,
+                        (1j*self.e*self.Ay1-self.mu/self.v)*IDN+(CYC.T-CYC)/self.w],
+                       [(1j*self.e*self.Ay1+self.mu/self.v)*IDN+(CYC.T-CYC)/self.w,
+                        (self.e*self.Ax+self.V/self.v)*IDN]]
         else:
-            for i in range(self.L):
-                self.RLlinks[(i+1)%self.L,i]=self.theta2
-        self.transfer = LA.expm(np.block([[np.zeros(shape=(self.R,self.R)),self.RLlinks],[self.RLlinks.T,np.zeros(shape=(self.L,self.L))]]))
-        self.rr = self.transfer[:self.R,:self.R]
-        self.rl = self.transfer[:self.R,self.R:]
-        self.lr = self.transfer[self.R:,:self.R]
-        self.ll = self.transfer[self.R:,self.R:]
+            raise NotImplementedError()
+        print("flag")
+        tempstorage['pre_exp'] = pre_exp
+        self.transfer = LA.expm(-1j*self.l*np.block(pre_exp))
+        if np.amax(self.transfer)>5000:
+            print("warning", np.max(self.transfer))
+        self.t_rr = self.transfer[:self.R,:self.R]
+        self.t_rl = self.transfer[:self.R,self.R:]
+        self.t_lr = self.transfer[self.R:,:self.R]
+        self.t_ll = self.transfer[self.R:,self.R:]
+        self.scattering = np.block(chiral_network_layer.blockconversion([[self.t_rr, self.t_rl],[self.t_lr, self.t_ll]]))
+        self.s_rr = self.scattering[:self.R,:self.R]
+        self.s_rl = self.scattering[:self.R,self.R:]
+        self.s_lr = self.scattering[self.R:,:self.R]
+        self.s_ll = self.scattering[self.R:,self.R:]
+        #print(self.scattering)
     def transfer_blocks(self, N=1):
         for i in range(N):
-            #print(i)
-            yield [[self.rr, self.rl],[self.lr, self.ll]]
+            yield [[self.t_rr, self.t_rl],[self.t_lr, self.t_ll]]
     def scattering_blocks(self, N=1):
-        scat = chiral_network_layer.blockconversion([[self.rr, self.rl],[self.lr, self.ll]])
         for i in range(N):
-            #print(i)
-            yield scat
+            yield [[self.s_rr, self.s_rl],[self.s_lr, self.s_ll]]
     def transfer(self, N=1):
-        """yields the transfer matrix of a single layer"""
-        result = self.transfer
         for i in range(N):
-            #print(i)
-            yield result
+            yield self.transfer
     def scattering(self, N=1):
-        result = np.block(chiral_network_layer.blockconversion([[self.rr, self.rl],[self.lr, self.ll]]))
         for i in range(N):
-            #print(i)
-            yield result
+            yield self.scattering
 
+"""only supports Ax and V noise; Ay noise depends on noise depth"""
 class noisy_uniform_layer(chiral_network_layer):
-    def __init__(self, N, delta = 0.0, norm = 1.0, periodic=False, dtype = np.dtype(np.complex128), W=0, noisetype="paired_flip"):
-        self.W = W
+    def cyc(self, array):
+        return np.roll(np.diag(array), 1, axis=1)
+    def matgen(self, **new_params):
+        params = {'l':1, 'w':1, 'e':1, 'Ax':np.zeros(self.size), 'Ay1':np.zeros(self.size), 'Ay2':np.zeros(self.size), 'V':np.zeros(self.size), 'mu':0, 'v':1}
+        for i in new_params:
+            params[i]=new_params[i]
+        l = params['l']
+        w = params['w']
+        e = params['e']
+        v = params['v']
+        mu = params['mu']
+        Ax = params['Ax']#array
+        Ay1 = params['Ay1']#array
+        Ay2 = params['Ay2']
+        V = params['V']#array
+        CYC = np.roll(np.identity(self.size), 1, axis=1)
+        IDN = np.identity(self.size)
+        t1 = self.cyc(Ay2)
+        roll = (e*Ax+V/v)
+        roll = (roll+np.roll(roll, 1))/2
+        pre_exp = [[np.diag(e*Ax-V/v),
+                    0.5j*e*np.diag(Ay1)+0.5j*e*t1-(mu/v/2)*(IDN+CYC)+(IDN-CYC)/w],
+                   [0.5j*e*np.diag(Ay1)+0.5j*e*t1.T+(mu/v/2)*(IDN+CYC.T)-(IDN-CYC.T)/w,
+                    np.diag(roll)]]
+        transfer = LA.expm(-1j*l*np.block(pre_exp))
+        if np.amax(transfer)>5000:
+            print("warning", np.max(transfer))
+        t_rr = transfer[:self.R,:self.R]
+        t_rl = transfer[:self.R,self.R:]
+        t_lr = transfer[self.R:,:self.R]
+        t_ll = transfer[self.R:,self.R:]
+        temp = np.block(chiral_network_layer.blockconversion([[t_rr, t_rl],[t_lr, t_ll]]))
+        print(np.around(temp.conj().T@temp-np.identity(2*self.size), decimals=5))
+        return chiral_network_layer.blockconversion([[t_rr, t_rl],[t_lr, t_ll]])
+    def two_blockconv(self,matx):
+        """
+        Converts matrices pseudo-unitary under R/L odd signature metric to its "dual" unitary matrices and vice-versa.
+        This basically converts scattering matrices to transfer matrices and vice-versa
+        """
+        a = matx[0][0]
+        b = matx[0][1]
+        c = matx[1][0]
+        d = matx[1][1]
+        newd = 1/d
+        bdi = b*newd
+        newa = a - bdi*c
+        newb = bdi
+        newc = -newd*c
+        return [[newa, newb],[newc, newd]]
+    def __init__(self, N, params={}, periodic=True, dtype = np.dtype(np.complex128), noisetype="default"):
         self.noisetype = noisetype
-        clean_uniform_layer.__init__(self, N, delta, norm, periodic, dtype)
+        if 'noise_strength' in params:
+            self.noise_strength = params['noise_strength']
+        else:
+            print("no noise strength specified")
+            self.noise_strength = 1.0
+        clean_uniform_layer.__init__(self, N, params, periodic, dtype)
     def transfer_blocks(self, N=1):
-        W = self.W
-        if self.noisetype == "iso_flip":
+        for i in range(N):
+            if self.noisetype=="default":
+                Zr = np.array([np.exp(2*np.pi*1j*np.random.random()) for i in range(self.R)])
+            elif self.noisetype=="none":
+                Zr = np.array([1 for i in range(self.R)])
+            else:
+                Zr = np.array([np.exp(2*np.pi*1j*np.random.random()) for i in range(self.R)])
+            yield [[self.t_rr, self.t_rl*Zr],[self.t_lr, self.t_ll*Zr]]
+    def scattering_blocks(self, N=1):
+        if self.noisetype=="default":
             for i in range(N):
-                Zr = np.array([-1 if np.random.random()<W else 1 for i in range(self.R)])
-                Zl = np.array([-1 if np.random.random()<W else 1 for i in range(self.L)])
-                rr = self.rr*Zr
-                rl = self.rl*Zl
-                lr = self.lr*Zr
-                ll = self.ll*Zl
-                yield [[rr, rl],[lr, ll]]
-        elif self.noisetype == "chiral_flip":
+                Zl = np.array([np.exp(2*np.pi*1j*np.random.random()) for i in range(self.R)])
+                yield [[self.s_rr, self.s_rl*Zl],[self.s_lr, self.s_ll*Zl]]
+#        elif self.noisetype=="rot90":
+#            for i in range(N):
+#                k = np.random.normal(size=self.R)*self.noise_strength
+#                mag = (1-k*1j)/(1 + k**2)
+#                A = np.diag(mag)
+#                B = np.diag(k*mag)
+#                yield chiral_network_layer.combine_scattering_matrices([[self.s_rr, self.s_rl],[self.s_lr, self.s_ll]],[[A,B],[-B,A]])
+        elif self.noisetype[:6]=="rotsym":
+            CYC = np.roll(np.identity(self.size), 1, axis=1)
+            theta = int(self.noisetype[6:])/180*np.pi
+            rot45 = np.array([[np.cos(theta)-1,-np.sin(theta)*1j],[-np.sin(theta)*1j,np.cos(theta)+1]])
+            def gen(toggle=False):
+                nonlocal rot45, self, CYC
+                noise_amps = np.random.normal(size=self.R)*self.noise_strength
+                Zrr = []
+                Zrl = []
+                Zlr = []
+                Zll = []
+                for k in noise_amps:
+                    transfer = LA.expm(1j*rot45*k)
+                    scattering = self.two_blockconv(transfer)
+                    Zrr.append(scattering[0][0])
+                    Zrl.append(scattering[0][1])
+                    Zlr.append(scattering[1][0])
+                    Zll.append(scattering[1][1])
+                if toggle:
+                    return [[np.diag(Zrr),np.diag(Zrl)@CYC.T],[CYC@np.diag(Zlr),np.diag(Zll)]]
+                else:
+                    return [[np.diag(Zrr),np.diag(Zrl)],[np.diag(Zlr),np.diag(Zll)]]
             for i in range(N):
-                Zr = np.array([-1 if np.random.random()<W else 1 for i in range(self.R)])
-                rr = self.rr*Zr
-                rl = self.rl
-                lr = self.lr*Zr
-                ll = self.ll
-                yield [[rr, rl],[lr, ll]]
-        W = 2*self.W
-        if self.noisetype == "iso_rotation":
+                block1 = gen(False)
+                block2 = gen(True)
+                midblocks = chiral_network_layer.combine_scattering_matrices(block1, block2)
+                yield chiral_network_layer.combine_scattering_matrices([[self.s_rr, self.s_rl],[self.s_lr, self.s_ll]],midblocks)
+        elif self.noisetype[:3]=="rot":
+            print("rot")
+            theta = int(self.noisetype[3:])/180*np.pi
+            rot = np.array([[np.cos(theta)-1,-np.sin(theta)*1j],[-np.sin(theta)*1j,np.cos(theta)+1]])
             for i in range(N):
-                Zr = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
-                Zl = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.L)])
-                rr = self.rr*Zr
-                rl = self.rl*Zl
-                lr = self.lr*Zr
-                ll = self.ll*Zl
-                yield [[rr, rl],[lr, ll]]
-        elif self.noisetype == "chiral_rotation":
+                noise_amps = np.random.normal(size=self.R)*self.noise_strength
+                Zrr = []
+                Zrl = []
+                Zlr = []
+                Zll = []
+                for k in noise_amps:
+                    transfer = LA.expm(1j*rot*k)
+                    scattering = self.two_blockconv(transfer)
+                    Zrr.append(scattering[0][0])
+                    Zrl.append(scattering[0][1])
+                    Zlr.append(scattering[1][0])
+                    Zll.append(scattering[1][1])
+                tempstorage['matrix'] = chiral_network_layer.combine_scattering_matrices([[self.s_rr, self.s_rl],[self.s_lr, self.s_ll]],[[np.diag(Zrr),np.diag(Zrl)],[np.diag(Zlr),np.diag(Zll)]])
+                yield tempstorage['matrix']
+        elif self.noisetype=="none":
+            print("none")
             for i in range(N):
-                Zr = np.array([np.exp(1j*(np.random.random()-0.5)*W) for i in range(self.R)])
-                rr = self.rr*Zr
-                rl = self.rl
-                lr = self.lr*Zr
-                ll = self.ll
-                yield [[rr, rl],[lr, ll]]
+                tempstorage['matrix'] = [[self.s_rr, self.s_rl],[self.s_lr, self.s_ll]]
+                yield tempstorage['matrix']
+        elif self.noisetype=="precise_default":
+            for i in range(N):
+                Ax = np.random.normal(size=self.size)*self.noise_strength
+                V = Ax
+                yield self.matgen(l=self.l, w=self.w, mu=self.mu, e=self.e, v=self.v, Ax=Ax, V=V)
+        elif self.noisetype[:11]=="precise_rot":
+            angle = int(self.noisetype[11:])/180*np.pi
+            c = np.cos(angle)
+            s = np.sin(angle)
+            for i in range(N):
+                V = np.random.normal(size=self.size)*self.noise_strength
+                Ax = V*c
+                Ay1 = V*s
+                Ay2 = (Ay1+np.roll(Ay1,-1))/2
+                yield self.matgen(l=self.l, w=self.w, mu=self.mu, e=self.e, v=self.v, Ax=Ax, Ay1=Ay1, Ay2=Ay2, V=V)
+        else:
+            for i in range(N):
+                Zl = np.array([np.exp(2*np.pi*1j*np.random.random()) for i in range(self.R)])
+                yield [[self.s_rr, self.s_rl.T*Zl],[self.s_lr, self.s_ll.T*Zl]]
+    def transfer(self, N=1):
+        for i in self.transfer_blocks(N):
+            yield np.block(i)
+    def scattering(self, N=1):
+        for i in self.scattering_blocks(N):
+            yield np.block(i)
+
+class noisy_uniform_layer_span(chiral_network_layer):
+    pass
+
+class clean_wave_layer(chiral_network_layer):
+    def super_roll(self,array):
+        return np.hstack([[np.roll(array,self.N - i) for i in range(self.size)]])
+    def genlayer(self, params):
+        Ax = params['Ax']
+        Ay = params['Ay']
+        V = params['V']
+        v = params['v']
+        W = params['W']
+        mu = params['mu']
+        e = params['e']
+        k_0 = 2*np.pi/W
+        l = params['l']
+        N = self.N
+        size = self.size
+        counter = np.linspace(-N,N,2*N+1)
+        eAx = e*Ax
+        Vov = V/v
+        RRcounter = -eAx-Vov
+        LLcounter = -eAx+Vov
+        RLdiag = (1j*k_0/v)*counter - mu/v
+        LRdiag = (1j*k_0/v)*counter + mu/v
+        sq = -self.super_roll(1j*e*Ay)
+        pre_exp = [[self.super_roll(RRcounter),sq+np.diag(LRdiag)],[sq+np.diag(RLdiag),self.super_roll(LLcounter)]]
+        #print(pre_exp)
+        return LA.expm(1j*l*np.block(pre_exp))
+    def __init__(self, N, params={}, periodic=True, dtype = np.dtype(np.complex128), noisetype="none"):
+        L = 2*N + 1
+        R = 2*N + 1
+        chiral_network_layer.__init__(self, N, N,  dtype = dtype)
+        self.N = N
+        self.size = 2*N + 1
+        self.params = {'Ax': np.array([0]*self.size), 'Ay':np.array([0]*self.size), 'V':np.array([0]*self.size), 'v':1.0, 'W':1.0, 'e':1.0, 'mu':0.0, 'l':1.0}
+        for key in params:
+            self.params[key]=params[key]
+        self.transfer = self.genlayer(self.params)
+        #print(self.transfer)
+        self.t_rr = self.transfer[:self.R,:self.R]
+        self.t_rl = self.transfer[:self.R,self.R:]
+        self.t_lr = self.transfer[self.R:,:self.R]
+        self.t_ll = self.transfer[self.R:,self.R:]
+        self.scattering = np.block(chiral_network_layer.blockconversion([[self.t_rr, self.t_rl],[self.t_lr, self.t_ll]]))
+        self.s_rr = self.scattering[:self.R,:self.R]
+        self.s_rl = self.scattering[:self.R,self.R:]
+        self.s_lr = self.scattering[self.R:,:self.R]
+        self.s_ll = self.scattering[self.R:,self.R:]
+    def transfer_blocks(self, N=1):
+        for i in range(N):
+            yield [[self.t_rr, self.t_rl],[self.t_lr, self.t_ll]]
+    def scattering_blocks(self, N=1):
+        for i in range(N):
+            yield [[self.s_rr, self.s_rl],[self.s_lr, self.s_ll]]
+    def transfer(self, N=1):
+        for i in range(N):
+            yield self.transfer
+    def scattering(self, N=1):
+        for i in range(N):
+            yield self.scattering
 
 class clean_square_layer(chiral_network_layer):
     def __init__(self, N, beta=0.0, periodic=True, dtype = np.dtype(np.complex128)):
@@ -807,17 +1006,20 @@ class full_network:
         self => 2
         other => 1
         """
-        a1 = blocks1[0][0]
-        b1 = blocks1[0][1]
-        c1 = blocks1[1][0]
-        d1 = blocks1[1][1]
-        a2 = blocks2[0][0]
-        b2 = blocks2[0][1]
-        c2 = blocks2[1][0]
-        d2 = blocks2[1][1]
-        m, n = b2.shape
-        prefix2 = d2@LA.inv(np.identity(n)-c1@b2)
-        prefix1 = a1@LA.inv(np.identity(m)-b2@c1)
+        try:
+            a1 = blocks1[0][0]
+            b1 = blocks1[0][1]
+            c1 = blocks1[1][0]
+            d1 = blocks1[1][1]
+            a2 = blocks2[0][0]
+            b2 = blocks2[0][1]
+            c2 = blocks2[1][0]
+            d2 = blocks2[1][1]
+            m, n = b2.shape
+            prefix2 = d2@LA.inv(np.identity(n)-c1@b2)
+            prefix1 = a1@LA.inv(np.identity(m)-b2@c1)
+        except LA.LinAlgError:
+            print(blocks1, blocks2)
         return [[prefix1@a2,b1+prefix1@(b2@d1)],[c2+prefix2@(c1@a2),prefix2@d1]]
     def transfer_eigenvalues(self, samples = 100, presamples = 100):
         size = self.network_layer.R+self.network_layer.L
@@ -838,12 +1040,12 @@ class full_network:
             return generator.__next__()
         else:
             return full_network.combine_scattering_matrices(self.tree_scattering(length=length//2, generator=generator),self.tree_scattering(length=length-length//2, generator=generator))
-    def conductance(self, order = 5, collection=4, noise_average=1, error=False, original = False):
+    def conductance(self, length = 20, collection=4, noise_average=1, error=False, original = False):
         if noise_average>1:
             R = []
             L = []
             for i in range(noise_average):
-                r, l, trash1, trash2 = self.conductance(order, collection, noise_average=1)
+                r, l, trash1, trash2 = self.conductance(length, collection, noise_average=1)
                 R.append(r)
                 L.append(l)
             result = []
@@ -857,7 +1059,7 @@ class full_network:
                 result.append(L)
             return result
         """returns conductance divided by e^2/h"""
-        scattering = self.tree_scattering(length=int(2**order))
+        scattering = self.tree_scattering(length=length)
         Z = np.block(scattering)
         #print(Z.conj().T@Z)
         right_trans = np.trace(scattering[0][0]@scattering[0][0].conj().T)
